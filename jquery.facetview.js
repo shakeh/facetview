@@ -403,6 +403,7 @@ search box - the end user will not know they are happening.
             "sharesave_link": true,
             "description":"",
             "facets":[],
+            "facet_display_count":5,
             "extra_facets": {},
             "enable_rangeselect": false,
             "include_facets_in_querystring": false,
@@ -435,7 +436,16 @@ search box - the end user will not know they are happening.
             "pushstate": true,
             "linkify": true,
             "default_operator": "OR",
-            "default_freetext_fuzzify": false
+            "default_freetext_fuzzify": false,
+            "search_url":"",
+            "default_url_params":{
+                'wt':'json',
+                'indent':'true'},
+            "query_parameter":"q",
+            "solr_paging_params":{
+                "from":"start",
+                "size":"rows"
+            },
         };
 
 
@@ -527,7 +537,7 @@ search box - the end user will not know they are happening.
             if ('size' in morewhat ) {
                 var currentval = morewhat['size'];
             } else {
-                var currentval = 10;
+                var currentval = options.facet_display_count;
             }
             var newmore = prompt('Currently showing ' + currentval + '. How many would you like instead?');
             if (newmore) {
@@ -724,34 +734,54 @@ search box - the end user will not know they are happening.
         // ===============================================
 
         // read the result object and return useful vals
-        // returns an object that contains things like ["data"] and ["facets"]
+        // returns an object that contains things like ["records"] and ["facets"]
         var parseresults = function(dataobj) {
             var resultobj = new Object();
             resultobj["records"] = new Array();
             resultobj["start"] = "";
             resultobj["found"] = "";
             resultobj["facets"] = new Object();
-            for ( var item = 0; item < dataobj.hits.hits.length; item++ ) {
-                if ( options.fields ) {
-                    resultobj["records"].push(dataobj.hits.hits[item].fields);
-                } else if ( options.partial_fields ) {
-                    var keys = [];
-                    for(var key in options.partial_fields){
-                        keys.push(key);
+
+            if ( options.search_index == "elasticsearch" ) {
+                for ( var item = 0; item < dataobj.hits.hits.length; item++ ) {
+                    if ( options.fields ) {
+                        resultobj["records"].push(dataobj.hits.hits[item].fields);
+                    } else if ( options.partial_fields ) {
+                        var keys = [];
+                        for(var key in options.partial_fields){
+                            keys.push(key);
+                        }
+                        resultobj["records"].push(dataobj.hits.hits[item].fields[keys[0]]);
+                    } else {
+                        resultobj["records"].push(dataobj.hits.hits[item]._source);
                     }
-                    resultobj["records"].push(dataobj.hits.hits[item].fields[keys[0]]);
-                } else {
-                    resultobj["records"].push(dataobj.hits.hits[item]._source);
                 }
-            }
-            resultobj["start"] = "";
-            resultobj["found"] = dataobj.hits.total;
-            for (var item in dataobj.facets) {
-                var facetsobj = new Object();
-                for (var thing = 0; thing < dataobj.facets[item]["terms"].length; thing++) {
-                    facetsobj[ dataobj.facets[item]["terms"][thing]["term"] ] = dataobj.facets[item]["terms"][thing]["count"];
+                resultobj["start"] = "";
+                resultobj["found"] = dataobj.hits.total;
+                for (var item in dataobj.facets) {
+                    var facetsobj = new Object();
+                    for (var thing = 0; thing < dataobj.facets[item]["terms"].length; thing++) {
+                        facetsobj[ dataobj.facets[item]["terms"][thing]["term"] ] = dataobj.facets[item]["terms"][thing]["count"];
+                    }
+                    resultobj["facets"][item] = facetsobj;
                 }
-                resultobj["facets"][item] = facetsobj;
+            } else {
+                resultobj["records"] = dataobj.response.docs;
+                resultobj["start"] = dataobj.response.start;
+                resultobj["found"] = dataobj.response.numFound;
+                if (dataobj.facet_counts) {
+                    for (var item in dataobj.facet_counts.facet_fields) {
+                        var facetsobj = new Object();
+                        var count = 0;
+                        for ( var each in dataobj.facet_counts.facet_fields[item]) {
+                            if ( count % 2 == 0 ) {
+                            facetsobj[ dataobj.facet_counts.facet_fields[item][each] ] = dataobj.facet_counts.facet_fields[item][count + 1];
+                            }
+                            count += 1;
+                        }
+                        resultobj["facets"][item] = facetsobj;
+                    }
+                }
             }
             return resultobj;
         };
@@ -1123,6 +1153,53 @@ search box - the end user will not know they are happening.
             return qy;
         };
 
+            var solrsearchquery = function() {
+            // set default URL params
+            var urlparams = "";
+            for (var item in options.default_url_params) {
+                urlparams += item + "=" + options.default_url_params[item] + "&";
+            }
+            // do paging params
+            var pageparams = "";
+            for (var item in options.paging) {
+                pageparams += options.solr_paging_params[item] + "=" + options.paging[item] + "&";
+            }
+            // set facet params
+            var urlfilters = "";
+            for (var item in options.facets) {
+                urlfilters += "facet.field=" + options.facets[item]['field'] + "&";
+                if ( options.facets[item]['size'] ) {
+                    urlfilters += "f." + options.facets[item]['field'] + ".facet.limit=" + options.facets[item]['size'] + "&";
+                }
+            }
+            if ( options.facets.length > 0 ) {
+                urlfilters += "facet=on&";
+            }
+            // build starting URL
+            var theurl = urlparams + pageparams + urlfilters;
+            // add default query values
+            // build the query, starting with default values
+            var query = "";
+            //for (var item in options.predefined_filters) {
+            // query += item + ":" + options.predefined_filters[item] + " AND ";
+            //}
+            $('.facetview_filterselected',obj).each(function() {
+                query += $(this).attr('rel') + ':"' +
+                $(this).attr('href') + '" AND ';
+            });
+            // add any freetext filter
+            if (options.q != "") {
+                query += options.q + '*';
+            }
+            query = query.replace(/ AND $/,"");
+            // set a default for blank search
+            if (query == "") {
+                query = "*:*";
+            }
+            theurl += options.query_parameter + '=' + query;
+            return theurl;
+         };
+
         // execute a search
         var dosearch = function() {
             jQuery('.notify_loading').show();
@@ -1132,21 +1209,35 @@ search box - the end user will not know they are happening.
             } else {
                 options.q = $(options.searchbox_class).last().val();
             };
-            // make the search query
-            var qrystr = elasticsearchquery();
+
             // augment the URL bar if possible
             if ( options.pushstate ) {
                 var currurl = '?source=' + options.querystring;
                 window.history.pushState("","search",currurl);
             };
-            $.ajax({
-                type: "get",
-                url: options.search_url,
-                data: {source: qrystr},
-                // processData: false,
-                dataType: options.datatype,
-                success: showresults
-            });
+
+            // make the search query
+            var qrystr = '';
+            if ( options.search_index == "elasticsearch") {
+                qrystr = elasticsearchquery();
+                $.ajax({
+                    type: "get",
+                    url: options.search_url,
+                    data: {source: qrystr},
+                    // processData: false,
+                    dataType: options.datatype,
+                    success: showresults
+                });
+            } else if (options.search_index == "solr") {
+                qrystr = solrsearchquery();
+                $.ajax({ 
+                  type: "get", 
+                  url: options.search_url + solrsearchquery(), 
+                  dataType:options.datatype, 
+                  jsonp:"json.wrf", 
+                  success: function(data) { showresults(data) } 
+                });
+            }
         };
 
         // show search help
@@ -1182,6 +1273,7 @@ search box - the end user will not know they are happening.
             };
             orderby();
         };
+
         var orderby = function(event) {
             event ? event.preventDefault() : "";
             var sortchoice = $('.facetview_orderby', obj).val();
